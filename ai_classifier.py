@@ -5,20 +5,39 @@ import ollama
 
 MODEL_NAME = "llama3.2:1b"
 
+ALLOWED_CATEGORIES = {
+    "MISSING_DOCUMENT",
+    "OTHER",
+}
+
+ALLOWED_SEVERITIES = {
+    "LOW",
+    "MEDIUM",
+    "HIGH",
+}
+
+ALLOWED_ACTIONS = {
+    "REQUEST_DOCUMENT",
+    "HUMAN_REVIEW",
+}
+
 
 def classify_issue(issue: str) -> dict:
     """
-    Ask the local AI model to classify a workflow issue.
-    The AI recommendation is advisory, not an approval decision.
+    Classify a workflow issue with local AI.
+    The result is advisory; Python workflow rules remain authoritative.
     """
+
+    if not isinstance(issue, str) or not issue.strip():
+        raise ValueError("Issue must be a non-empty string")
 
     prompt = f"""
 You are an assistant for a case-management workflow.
 
-Analyze this issue:
+Classify this issue:
 {issue}
 
-Return only a JSON object with these fields:
+Return a JSON object with exactly these fields:
 {{
   "issue_category": "MISSING_DOCUMENT",
   "severity": "MEDIUM",
@@ -26,11 +45,23 @@ Return only a JSON object with these fields:
   "human_review_required": true
 }}
 
+Allowed issue_category values:
+- MISSING_DOCUMENT
+- OTHER
+
+Allowed severity values:
+- LOW
+- MEDIUM
+- HIGH
+
+Allowed recommended_action values:
+- REQUEST_DOCUMENT
+- HUMAN_REVIEW
+
 Rules:
-- Use the exact field names shown.
-- Use JSON only.
-- Missing required documents must always require human review.
-- Never recommend automatic case approval.
+- Return JSON only.
+- Missing required documents always require human review.
+- Never recommend automatic approval.
 """
 
     response = ollama.generate(
@@ -41,7 +72,13 @@ Rules:
         options={"temperature": 0},
     )
 
-    result = json.loads(response["response"])
+    try:
+        result = json.loads(response["response"])
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError("AI returned invalid JSON") from exc
+
+    if not isinstance(result, dict):
+        raise ValueError("AI response must be a JSON object")
 
     required_fields = {
         "issue_category",
@@ -53,12 +90,24 @@ Rules:
     if not required_fields.issubset(result):
         raise ValueError("AI response is missing required fields")
 
+    if result["issue_category"] not in ALLOWED_CATEGORIES:
+        raise ValueError("AI returned an unsupported issue category")
+
+    if result["severity"] not in ALLOWED_SEVERITIES:
+        raise ValueError("AI returned an unsupported severity")
+
+    if result["recommended_action"] not in ALLOWED_ACTIONS:
+        raise ValueError("AI returned an unsupported action")
+
     if not isinstance(result["human_review_required"], bool):
         raise ValueError("AI human_review_required must be a boolean")
 
-    # Enforce this safeguard in Python, not just in the AI prompt.
-    if "missing" in issue.lower() and "document" in issue.lower():
-        result["human_review_required"] = True
+    # Enforce missing-document safeguards in Python.
+    normalized_issue = issue.lower()
+
+    if "missing" in normalized_issue and "document" in normalized_issue:
+        result["issue_category"] = "MISSING_DOCUMENT"
         result["recommended_action"] = "REQUEST_DOCUMENT"
+        result["human_review_required"] = True
 
     return result

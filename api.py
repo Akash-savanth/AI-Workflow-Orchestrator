@@ -1,4 +1,6 @@
 
+import logging
+
 from fastapi import FastAPI, HTTPException
 
 from main import (
@@ -14,16 +16,25 @@ from database import (
 )
 from ai_classifier import classify_issue
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="AI Workflow Orchestrator",
     description="Workflow automation with local AI decision support",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 
 @app.on_event("startup")
 def startup():
     initialize_database()
+    logger.info("Workflow API started successfully")
 
 
 @app.get("/")
@@ -36,6 +47,7 @@ def process_case(case_id: str):
     case_data = get_customer(case_id)
 
     if case_data is None:
+        logger.warning("Case not found: %s", case_id)
         raise HTTPException(status_code=404, detail="Case not found")
 
     issues = validate_case(case_data)
@@ -54,6 +66,12 @@ def process_case(case_id: str):
         result["next_action"],
     )
 
+    logger.info(
+        "Case %s processed with status %s",
+        case_id,
+        result["status"],
+    )
+
     return {
         "case_id": case_data["case_id"],
         "customer_name": case_data["customer_name"],
@@ -67,6 +85,7 @@ def process_case(case_id: str):
 @app.get("/cases/{case_id}/history")
 def case_history(case_id: str):
     if get_customer(case_id) is None:
+        logger.warning("History requested for unknown case: %s", case_id)
         raise HTTPException(status_code=404, detail="Case not found")
 
     history = get_workflow_history(case_id)
@@ -83,25 +102,30 @@ def ai_review_case(case_id: str):
     case_data = get_customer(case_id)
 
     if case_data is None:
+        logger.warning("AI review requested for unknown case: %s", case_id)
         raise HTTPException(status_code=404, detail="Case not found")
 
     issues = validate_case(case_data)
     workflow_result = route_workflow(case_data, issues)
-
     ai_result = None
 
     if issues:
-        issue_text = "; ".join(issues)
         try:
-            ai_result = classify_issue(issue_text)
+            ai_result = classify_issue("; ".join(issues))
+            logger.info("AI classification completed for case %s", case_id)
+
         except Exception:
-            # If AI is unavailable, keep deterministic workflow routing.
+            logger.exception(
+                "AI classification failed for case %s; using workflow rules",
+                case_id,
+            )
+
             ai_result = {
                 "available": False,
-                "message": "AI classification unavailable; using workflow rules."
+                "message": "AI classification unavailable; using workflow rules.",
             }
 
-    # Missing documents must always require human review.
+    # Enforce the safety rule independently of AI output.
     if issues:
         workflow_result["status"] = "REVIEW_REQUIRED"
         workflow_result["next_action"] = "Send case for human review"
@@ -115,6 +139,12 @@ def ai_review_case(case_id: str):
         workflow_result["status"],
         issues,
         workflow_result["next_action"],
+    )
+
+    logger.info(
+        "AI-review workflow completed for case %s with status %s",
+        case_id,
+        workflow_result["status"],
     )
 
     return {
