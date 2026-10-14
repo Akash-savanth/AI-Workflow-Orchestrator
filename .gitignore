@@ -1,0 +1,10 @@
+﻿.venv/
+__pycache__/
+*.py[cod]
+workflow.db
+workflow.db-*
+workflow.log
+.env
+.env.*
+.coverage
+htmlcov/
